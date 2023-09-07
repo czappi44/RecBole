@@ -183,10 +183,12 @@ def data_preparation(config, dataset):
             train_data = get_dataloader(config, "train")(
                 config, train_dataset, train_sampler, kg_sampler, shuffle=True
             )
-
-        valid_data = get_dataloader(config, "valid")(
-            config, valid_dataset, valid_sampler, shuffle=False
-        )
+        if valid_dataset is not None:
+            valid_data = get_dataloader(config, "valid")(
+                config, valid_dataset, valid_sampler, shuffle=False
+            )
+        else:
+            valid_data = None
         test_data = get_dataloader(config, "test")(
             config, test_dataset, test_sampler, shuffle=False
         )

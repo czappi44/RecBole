@@ -18,6 +18,8 @@ import os
 import yaml
 from collections import Counter, defaultdict
 from logging import getLogger
+from typing import *
+import time 
 
 import numpy as np
 import pandas as pd
@@ -39,7 +41,6 @@ from recbole.utils.url import (
     makedirs,
     rename_atomic_files,
 )
-
 
 class Dataset(torch.utils.data.Dataset):
     """:class:`Dataset` stores the original dataset in memory.
@@ -288,7 +289,7 @@ class Dataset(torch.utils.data.Dataset):
             dataset_path (str): path of dataset dir.
         """
         if self.benchmark_filename_list is None:
-            inter_feat_path = os.path.join(dataset_path, f"{token}.inter")
+            inter_feat_path = dataset_path
             if not os.path.isfile(inter_feat_path):
                 raise ValueError(f"File {inter_feat_path} not exist.")
 
@@ -1728,6 +1729,57 @@ class Dataset(torch.utils.data.Dataset):
         next_df = [self.inter_feat[index] for index in next_index]
         next_ds = [self.copy(_) for _ in next_df]
         return next_ds
+    
+    def load_data_from_tsv_gru4rec_format(self, path:str) -> pd.DataFrame:
+        col_names = [self.config[k]+self.config['column_postfix'][self.config[k]] for k in ['USER_ID_FIELD', 'ITEM_ID_FIELD', 'TIME_FIELD']]
+        dtypes = {}
+        for cn in col_names:
+            atomic_type = cn.split(':')[-1]
+            if atomic_type == 'token':
+                dtypes[cn] = str
+            elif atomic_type == 'float':
+                dtypes[cn] = np.float64
+            else:
+                raise NotImplementedError(f"Time split only supports 'token' and 'float' atomic types, but {atomic_type} is given.")
+        data = pd.read_csv(path, sep='\t', usecols=col_names, dtype=dtypes)
+        data.rename(columns={cn: cn.split(':')[0] for cn in col_names}, inplace=True)
+        return data
+
+    def time_based_split_from_prepared_file(self, train_path:str, test_path:str, group_by:str) -> List[pd.DataFrame]:
+        """_summary_
+
+        Args:
+            train_path (str): path to the train dataset, created by the preprocessing script of the orignal gru4rec
+            test_path (str): path to the test dataset, created by the preprocessing script of the orignal gru4rec
+
+        Returns:
+            List[pd.DataFrame]: The train and test datasets
+        """           
+        def get_internal_session_ids(session_ids:np.ndarray) -> np.ndarray:
+            external_internal_session_map = self.field2token_id[self.uid_field]
+            return np.array([external_internal_session_map[sid] for sid in session_ids])
+        s = time.time()
+        self._drop_unused_col()
+        train_data = self.load_data_from_tsv_gru4rec_format(train_path)     
+        train_item_ids = train_data[self.iid_field].unique()
+        test_data = self.load_data_from_tsv_gru4rec_format(test_path)
+        print(test_data.shape, train_data.shape)
+
+        test_data = test_data[test_data[self.iid_field].isin(train_item_ids)]
+        test_session_lenghts = test_data.groupby(self.uid_field).size()
+        test_data = test_data[test_data[self.uid_field].isin(test_session_lenghts[test_session_lenghts > 1].index)]
+        print(test_data.shape, train_data.shape)
+        train_session_ids = train_data[self.uid_field].unique()
+        test_session_ids = test_data[self.uid_field].unique()
+        internal_train_session_ids = get_internal_session_ids(train_session_ids)
+        internal_test_session_ids = get_internal_session_ids(test_session_ids)
+
+        train_ds = self.inter_feat[internal_train_session_ids]
+        test_ds = self.inter_feat[internal_test_session_ids]
+        train_ds = self.copy(train_ds)
+        test_ds = self.copy(test_ds)
+
+        return train_ds, None, test_ds
 
     def shuffle(self):
         """Shuffle the interaction records inplace."""
@@ -1751,6 +1803,7 @@ class Dataset(torch.utils.data.Dataset):
             list: List of built :class:`Dataset`.
         """
         self._change_feat_format()
+        print("changed feat format")
 
         if self.benchmark_filename_list is not None:
             self._drop_unused_col()
@@ -1763,8 +1816,13 @@ class Dataset(torch.utils.data.Dataset):
 
         # ordering
         ordering_args = self.config["eval_args"]["order"]
+        split_args = self.config["eval_args"]["split"]
+        split_mode = list(split_args.keys())[0]
+
         if ordering_args == "RO":
             self.shuffle()
+        elif (ordering_args == "TO") and (split_mode == "TS"):
+            pass
         elif ordering_args == "TO":
             self.sort(by=self.time_field)
         else:
@@ -1773,13 +1831,11 @@ class Dataset(torch.utils.data.Dataset):
             )
 
         # splitting & grouping
-        split_args = self.config["eval_args"]["split"]
         if split_args is None:
             raise ValueError("The split_args in eval_args should not be None.")
         if not isinstance(split_args, dict):
             raise ValueError(f"The split_args [{split_args}] should be a dict.")
 
-        split_mode = list(split_args.keys())[0]
         assert len(split_args.keys()) == 1
         group_by = self.config["eval_args"]["group_by"]
         if split_mode == "RS":
@@ -1799,6 +1855,12 @@ class Dataset(torch.utils.data.Dataset):
             datasets = self.leave_one_out(
                 group_by=self.uid_field, leave_one_mode=split_args["LS"]
             )
+        elif split_mode == "TS":
+            train_path = split_args["TS"]["train_path"]
+            test_path = split_args["TS"]["test_path"]
+            self.logger.info(
+            f"time based split, from prepared file, train_path=[{train_path}], test_path=[{test_path}]")
+            datasets = self.time_based_split_from_prepared_file(train_path=train_path, test_path=test_path, group_by=self.uid_field)
         else:
             raise NotImplementedError(
                 f"The splitting_method [{split_mode}] has not been implemented."

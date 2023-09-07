@@ -265,7 +265,7 @@ class Trainer(AbstractTrainer):
                 iter_data.set_postfix_str(
                     set_color("GPU RAM: " + get_gpu_usage(self.device), "yellow")
                 )
-        return total_loss
+        return total_loss/len(train_data)
 
     def _valid_epoch(self, valid_data, show_progress=False):
         r"""Valid the model with valid data
@@ -431,6 +431,7 @@ class Trainer(AbstractTrainer):
             train_data.get_model(self.model)
         valid_step = 0
 
+        times = {"train_epoch_times": []}
         for epoch_idx in range(self.start_epoch, self.epochs):
             # train
             training_start_time = time()
@@ -444,6 +445,7 @@ class Trainer(AbstractTrainer):
             train_loss_output = self._generate_train_loss_output(
                 epoch_idx, training_start_time, training_end_time, train_loss
             )
+            times["train_epoch_times"].append(training_end_time-training_start_time)
             if verbose:
                 self.logger.info(train_loss_output)
             self._add_train_loss_to_tensorboard(epoch_idx, train_loss)
@@ -512,6 +514,7 @@ class Trainer(AbstractTrainer):
                     break
 
                 valid_step += 1
+        print("Avg. epoch time (s)", f'{sum(times["train_epoch_times"])/len(times["train_epoch_times"]):.2f}')
 
         self._add_hparam_to_tensorboard(self.best_valid_score)
         return self.best_valid_score, self.best_valid_result
