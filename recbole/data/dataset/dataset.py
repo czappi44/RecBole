@@ -1758,7 +1758,6 @@ class Dataset(torch.utils.data.Dataset):
         def get_internal_session_ids(session_ids:np.ndarray) -> np.ndarray:
             external_internal_session_map = self.field2token_id[self.uid_field]
             return np.array([external_internal_session_map[sid] for sid in session_ids])
-        s = time.time()
         self._drop_unused_col()
         train_data = self.load_data_from_tsv_gru4rec_format(train_path)     
         train_item_ids = train_data[self.iid_field].unique()
@@ -1771,14 +1770,30 @@ class Dataset(torch.utils.data.Dataset):
         print(test_data.shape, train_data.shape)
         train_session_ids = train_data[self.uid_field].unique()
         test_session_ids = test_data[self.uid_field].unique()
-        internal_train_session_ids = get_internal_session_ids(train_session_ids)
-        internal_test_session_ids = get_internal_session_ids(test_session_ids)
+        internal_train_session_ids = torch.tensor(get_internal_session_ids(train_session_ids))
+        internal_test_session_ids = torch.tensor(get_internal_session_ids(test_session_ids))
 
-        train_ds = self.inter_feat[internal_train_session_ids]
-        test_ds = self.inter_feat[internal_test_session_ids]
+        print(self.inter_feat)
+
+        train_ds = copy.deepcopy(self.inter_feat)
+        train_mask = torch.isin(train_ds[self.uid_field], internal_train_session_ids)
+        for key in train_ds:
+            train_ds[key] = train_ds[key][train_mask]
+        train_ds.length = len(train_ds[self.uid_field])
+
+        test_ds = copy.deepcopy(self.inter_feat)
+        test_mask = torch.isin(test_ds[self.uid_field], internal_test_session_ids)
+        for key in test_ds:
+            test_ds[key] = test_ds[key][test_mask]
+        test_ds.length = len(test_ds[self.uid_field])
+
+        train_sessions_len = len(torch.unique(train_ds[self.uid_field]))
+        test_sessions_len = len(torch.unique(test_ds[self.uid_field]))
+        print("train\t", f"sessions: {train_sessions_len}", f"items: {len(torch.unique(train_ds[self.iid_field]))}", f"events: {train_ds.length + train_sessions_len}")
+        print("test\t", f"sessions: {test_sessions_len}", f"items: {len(torch.unique(test_ds[self.iid_field]))}", f"events: {test_ds.length + test_sessions_len}")
+
         train_ds = self.copy(train_ds)
         test_ds = self.copy(test_ds)
-
         return train_ds, None, test_ds
 
     def shuffle(self):
@@ -1803,7 +1818,6 @@ class Dataset(torch.utils.data.Dataset):
             list: List of built :class:`Dataset`.
         """
         self._change_feat_format()
-        print("changed feat format")
 
         if self.benchmark_filename_list is not None:
             self._drop_unused_col()
@@ -1821,7 +1835,7 @@ class Dataset(torch.utils.data.Dataset):
 
         if ordering_args == "RO":
             self.shuffle()
-        elif (ordering_args == "TO") and (split_mode == "TS"):
+        elif (ordering_args == "NO") and (split_mode == "TS"):
             pass
         elif ordering_args == "TO":
             self.sort(by=self.time_field)
